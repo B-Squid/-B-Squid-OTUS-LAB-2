@@ -1,0 +1,55 @@
+# -*- mode: ruby -*-
+# vim: set ft=ruby :
+disks = 'b c'
+
+Vagrant.configure('2') do |config|
+   config.vm.box = 'centos/7'
+
+   config.vm.define :control do |control|
+     control.vm.hostname = 'lab2'
+     control.vm.network :public_network
+     control.vm.network :private_network, ip: '192.168.11.101'
+     control.vm.provider :kvm do |kvm, override|
+        kvm.memory_size = '1024m'
+     end
+     
+     control.vm.provider :libvirt do |libvirt|
+        libvirt.memory = 1024
+        libvirt.nested = true
+	libvirt.disk_bus = 'sata'								           #i don`t want to use vda, sda only
+	libvirt.disk_device = 'sda'
+        libvirt.storage :file, :device => 'sdb', :bus => 'sata', :size => '4500M', :serial => 'lab2-disk-0'
+	libvirt.storage :file, :device => 'sdc', :bus => 'sata', :size => '4500M', :serial => 'lab2-disk-1'
+     end
+
+     config.vm.provision "init", run: "once", type: "shell", inline: <<-SHELL
+        mkdir -p ~root/.ssh
+        cp ~vagrant/.ssh/auth* ~root/.ssh
+        yum install -y mdadm smartmontools hdparm gdisk wget xfsdump
+        SHELL
+
+     config.vm.provision "disks_prepare", run: "once", type: "shell", 
+        inline: <<-SHELL
+           for disk in #{disks}
+           do	 
+             ( echo o; echo n; echo p; echo 1; echo ; echo ; echo t; echo fd; echo w; ) | sudo fdisk /dev/sd$disk
+           done
+           SHELL
+
+     config.vm.provision "raid_routine", run: "once", type: "shell",
+        inline: <<-SHELL
+           yes | mdadm --create --verbose /dev/md0 --level=1 --raid-devices=2 /dev/sdb /dev/sdc 
+	   sleep 2
+           ( echo o; echo n; echo p; echo 1; echo ; echo ; echo t; echo fd; echo w; ) | sudo fdisk /dev/md0
+	   sleep 2
+	   mkfs.xfs /dev/md0p1
+	   sleep 2
+	   mkdir /etc/mdadm && touch /etc/mdadm/mdadm.conf && mkdir /mnt/nr
+           echo "DEVICE partitions" > /etc/mdadm/mdadm.conf
+	   mdadm --detail --scan | awk '/ARRAY/ {print}' >> /etc/mdadm/mdadm.conf
+           echo "/dev/md0p1	/mnt/nr	xfs	defaults 	1 2" >> /etc/fstab
+	   mount -a
+           SHELL
+      
+     end
+end
